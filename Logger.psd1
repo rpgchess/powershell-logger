@@ -2,8 +2,8 @@
     ModuleVersion = '1.0.0'
     GUID = 'a1b2c3d4-e5f6-7890-1234-567890abcdef'
     Author = 'Claudio Almeida'
-    CompanyName = 'Linx'
-    Copyright = '(c) 2026 Linx. All rights reserved.'
+    CompanyName = ''
+    Copyright = '(c) 2026.'
     Description = 'Módulo Logger - Sistema completo de logging estruturado com múltiplos níveis, formatos (Simple/Detailed/Json), saída colorida e suporte a arquivo'
     PowerShellVersion = '5.1'
     

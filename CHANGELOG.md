@@ -123,4 +123,4 @@ $logger.Flush()
 ---
 
 **Autor**: Claudio Almeida  
-**Projeto**: https://github.com/linx/powershell-logger
+**Projeto**: https://github.com/rpgchess/powershell-logger.git

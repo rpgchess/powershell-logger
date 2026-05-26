@@ -64,7 +64,7 @@
 
 ```powershell
 # Clonar repositório
-git clone https://github.com/linx/powershell-logger.git
+git clone https://github.com/rpgchess/powershell-logger.git
 cd powershell-logger
 
 # Importar módulo
@@ -414,8 +414,7 @@ MIT License - Ver [LICENSE](LICENSE) para detalhes.
 ## 👤 Autor
 
 **Claudio Almeida**  
-GitHub: [@claudioalmeida](https://github.com/claudioalmeida)  
-Empresa: Linx SA
+GitHub: [@rpgchess](https://github.com/rpgchess)  
 
 ---
 
