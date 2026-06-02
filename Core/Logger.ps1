@@ -42,13 +42,28 @@
 
 class Logger {
     [LoggerConfig] $Config
+    [string] $Name = ''
     hidden [System.Collections.Generic.List[string]] $Buffer
+    hidden [object] $_lockObject
     hidden static [Logger] $_instance = $null
     
     # Construtor padrão
     Logger() {
         $this.Config = [LoggerConfig]::new()
         $this.Buffer = [System.Collections.Generic.List[string]]::new()
+        $this._lockObject = [object]::new()
+    }
+    
+    # Construtor com nome e configuração
+    Logger([string] $Name, [LoggerConfig] $Config) {
+        if (-not $Config.IsValid()) {
+            throw "Configuração inválida: $($Config.ToString())"
+        }
+        
+        $this.Name = $Name
+        $this.Config = $Config
+        $this.Buffer = [System.Collections.Generic.List[string]]::new()
+        $this._lockObject = [object]::new()
     }
     
     # Construtor com configuração
@@ -59,6 +74,7 @@ class Logger {
         
         $this.Config = $Config
         $this.Buffer = [System.Collections.Generic.List[string]]::new()
+        $this._lockObject = [object]::new()
     }
     
     # Singleton pattern
@@ -80,50 +96,75 @@ class Logger {
         $this.Flush()  # Flush buffer existente
     }
     
-    # Log genérico (com exception)
-    [void] Log([LogLevel] $Level, [string] $Message, [Exception] $Exception) {
+    # Log genérico (com exception e dados estruturados)
+    [void] Log([LogLevel] $Level, [string] $Message, [Exception] $Exception, [hashtable] $ExtraData) {
         # Filtrar por nível mínimo
         if ($Level -lt $this.Config.MinLevel) {
             return
         }
         
-        # Formatar mensagem
-        $formattedMessage = $this.FormatMessage($Level, $Message, $Exception)
-        
-        # Saída para console
-        $this.WriteToConsole($Level, $formattedMessage)
-        
-        # Saída para arquivo (se configurado)
-        if (-not [string]::IsNullOrWhiteSpace($this.Config.OutputFile)) {
-            $this.WriteToFile($formattedMessage)
+        $locked = $false
+        try {
+            [System.Threading.Monitor]::Enter($this._lockObject, [ref] $locked)
+            
+            # Formatar mensagem
+            $formattedMessage = $this.FormatMessage($Level, $Message, $Exception, $ExtraData)
+            
+            # Saída para console
+            $this.WriteToConsole($Level, $formattedMessage)
+            
+            # Saída para arquivo (se configurado)
+            if (-not [string]::IsNullOrWhiteSpace($this.Config.OutputFile)) {
+                $this.WriteToFile($formattedMessage)
+            }
+        } finally {
+            if ($locked) { [System.Threading.Monitor]::Exit($this._lockObject) }
         }
+    }
+    
+    # Log genérico (com exception)
+    [void] Log([LogLevel] $Level, [string] $Message, [Exception] $Exception) {
+        $this.Log($Level, $Message, $Exception, $null)
     }
     
     # Log genérico (sem exception)
     [void] Log([LogLevel] $Level, [string] $Message) {
-        $this.Log($Level, $Message, $null)
+        $this.Log($Level, $Message, $null, $null)
     }
     
     # Formatar mensagem baseado no formato configurado
-    hidden [string] FormatMessage([LogLevel] $Level, [string] $Message, [Exception] $Exception) {
+    hidden [string] FormatMessage([LogLevel] $Level, [string] $Message, [Exception] $Exception, [hashtable] $ExtraData) {
         $output = ''
+        $namePrefix = if ($this.Name) { "[$($this.Name)] " } else { '' }
         
         switch ($this.Config.Format) {
             ([LogFormat]::Simple) {
-                $output = "[$($Level.ToString().ToUpper())] $Message"
+                $output = "${namePrefix}[$($Level.ToString().ToUpper())] $Message"
+                if ($ExtraData -and $ExtraData.Count -gt 0) {
+                    foreach ($key in $ExtraData.Keys) { $output += "`n  $key = $($ExtraData[$key])" }
+                }
             }
             ([LogFormat]::Detailed) {
                 $timestamp = ''
                 if ($this.Config.IncludeTimestamp) {
                     $timestamp = "[$([DateTime]::Now.ToString($this.Config.TimestampFormat))] "
                 }
-                $output = "$timestamp[$($Level.ToString().ToUpper())] $Message"
+                $output = "$timestamp${namePrefix}[$($Level.ToString().ToUpper())] $Message"
+                if ($ExtraData -and $ExtraData.Count -gt 0) {
+                    foreach ($key in $ExtraData.Keys) { $output += "`n  $key = $($ExtraData[$key])" }
+                }
             }
             ([LogFormat]::Json) {
                 $logEntry = @{
                     timestamp = [DateTime]::Now.ToString('o')
                     level = $Level.ToString().ToUpper()
                     message = $Message
+                }
+                
+                if ($this.Name) { $logEntry.logger = $this.Name }
+                
+                if ($ExtraData -and $ExtraData.Count -gt 0) {
+                    foreach ($key in $ExtraData.Keys) { $logEntry[$key] = $ExtraData[$key] }
                 }
                 
                 if ($null -ne $Exception) {
@@ -140,7 +181,7 @@ class Logger {
                 $output = ($logEntry | ConvertTo-Json -Compress)
             }
             default {
-                $output = "[$($Level.ToString().ToUpper())] $Message"
+                $output = "${namePrefix}[$($Level.ToString().ToUpper())] $Message"
             }
         }
         
@@ -179,79 +220,124 @@ class Logger {
     
     # Forçar escrita do buffer no arquivo
     [void] Flush() {
-        if ($this.Buffer.Count -eq 0) {
+        # Guard para Finalize() - $_lockObject pode ser null durante GC
+        if ($null -eq $this._lockObject) {
             return
         }
         
-        if ([string]::IsNullOrWhiteSpace($this.Config.OutputFile)) {
-            $this.Buffer.Clear()
-            return
-        }
-        
+        $locked = $false
         try {
-            $content = $this.Buffer -join "`n"
+            [System.Threading.Monitor]::Enter($this._lockObject, [ref] $locked)
             
-            if ($this.Config.AppendToFile) {
-                Add-Content -Path $this.Config.OutputFile -Value $content -ErrorAction Stop
-            } else {
-                Set-Content -Path $this.Config.OutputFile -Value $content -ErrorAction Stop
-                $this.Config.AppendToFile = $true  # Após primeira escrita, sempre append
+            if ($this.Buffer.Count -eq 0) {
+                return
             }
             
-            $this.Buffer.Clear()
-        } catch {
-            Write-Warning "Falha ao escrever no arquivo de log: $($_.Exception.Message)"
+            if ([string]::IsNullOrWhiteSpace($this.Config.OutputFile)) {
+                $this.Buffer.Clear()
+                return
+            }
+            
+            try {
+                $content = $this.Buffer -join "`n"
+                
+                if ($this.Config.AppendToFile) {
+                    Add-Content -Path $this.Config.OutputFile -Value $content -ErrorAction Stop
+                } else {
+                    Set-Content -Path $this.Config.OutputFile -Value $content -ErrorAction Stop
+                    $this.Config.AppendToFile = $true
+                }
+                
+                $this.Buffer.Clear()
+            } catch {
+                Write-Warning "Falha ao escrever no arquivo de log: $($_.Exception.Message)"
+            }
+        } finally {
+            if ($locked) { [System.Threading.Monitor]::Exit($this._lockObject) }
         }
     }
     
     # Obter cor baseada no nível
-    hidden [string] GetLevelColor([LogLevel] $Level) {
+    hidden [ConsoleColor] GetLevelColor([LogLevel] $Level) {
         switch ($Level) {
-            ([LogLevel]::DEBUG)   { return 'Gray' }
-            ([LogLevel]::INFO)    { return 'Cyan' }
-            ([LogLevel]::WARN)    { return 'Yellow' }
-            ([LogLevel]::ERROR)   { return 'Red' }
-            ([LogLevel]::SUCCESS) { return 'Green' }
-            ([LogLevel]::FATAL)   { return 'DarkRed' }
-            default               { return 'White' }
+            ([LogLevel]::DEBUG)   { return [ConsoleColor]::Gray }
+            ([LogLevel]::INFO)    { return [ConsoleColor]::Cyan }
+            ([LogLevel]::WARN)    { return [ConsoleColor]::Yellow }
+            ([LogLevel]::ERROR)   { return [ConsoleColor]::Red }
+            ([LogLevel]::SUCCESS) { return [ConsoleColor]::Green }
+            ([LogLevel]::FATAL)   { return [ConsoleColor]::DarkRed }
+            default               { return [ConsoleColor]::White }
         }
-        
-        return 'White'  # Fallback (não deve ser atingido)
+        return [ConsoleColor]::White
     }
     
     # Atalhos por nível
     [void] Debug([string] $Message) {
-        $this.Log([LogLevel]::DEBUG, $Message)
+        $this.Log([LogLevel]::DEBUG, $Message, $null, $null)
+    }
+    
+    [void] Debug([string] $Message, [hashtable] $ExtraData) {
+        $this.Log([LogLevel]::DEBUG, $Message, $null, $ExtraData)
     }
     
     [void] Info([string] $Message) {
-        $this.Log([LogLevel]::INFO, $Message)
+        $this.Log([LogLevel]::INFO, $Message, $null, $null)
+    }
+    
+    [void] Info([string] $Message, [hashtable] $ExtraData) {
+        $this.Log([LogLevel]::INFO, $Message, $null, $ExtraData)
     }
     
     [void] Warn([string] $Message) {
-        $this.Log([LogLevel]::WARN, $Message)
+        $this.Log([LogLevel]::WARN, $Message, $null, $null)
+    }
+    
+    [void] Warn([string] $Message, [hashtable] $ExtraData) {
+        $this.Log([LogLevel]::WARN, $Message, $null, $ExtraData)
     }
     
     [void] Error([string] $Message) {
-        $this.Log([LogLevel]::ERROR, $Message)
+        $this.Log([LogLevel]::ERROR, $Message, $null, $null)
     }
     
     [void] Error([string] $Message, [Exception] $Exception) {
-        $this.Log([LogLevel]::ERROR, $Message, $Exception)
+        $this.Log([LogLevel]::ERROR, $Message, $Exception, $null)
+    }
+    
+    [void] Error([string] $Message, [hashtable] $ExtraData) {
+        $this.Log([LogLevel]::ERROR, $Message, $null, $ExtraData)
+    }
+    
+    [void] Error([string] $Message, [Exception] $Exception, [hashtable] $ExtraData) {
+        $this.Log([LogLevel]::ERROR, $Message, $Exception, $ExtraData)
     }
     
     [void] Success([string] $Message) {
-        $this.Log([LogLevel]::SUCCESS, $Message)
+        $this.Log([LogLevel]::SUCCESS, $Message, $null, $null)
+    }
+    
+    [void] Success([string] $Message, [hashtable] $ExtraData) {
+        $this.Log([LogLevel]::SUCCESS, $Message, $null, $ExtraData)
     }
     
     [void] Fatal([string] $Message) {
-        $this.Log([LogLevel]::FATAL, $Message)
-        $this.Flush()  # Garantir que FATAL seja escrito imediatamente
+        $this.Log([LogLevel]::FATAL, $Message, $null, $null)
+        $this.Flush()
     }
     
     [void] Fatal([string] $Message, [Exception] $Exception) {
-        $this.Log([LogLevel]::FATAL, $Message, $Exception)
-        $this.Flush()  # Garantir que FATAL seja escrito imediatamente
+        $this.Log([LogLevel]::FATAL, $Message, $Exception, $null)
+        $this.Flush()
+    }
+    
+    [void] Fatal([string] $Message, [hashtable] $ExtraData) {
+        $this.Log([LogLevel]::FATAL, $Message, $null, $ExtraData)
+        $this.Flush()
+    }
+    
+    [void] Fatal([string] $Message, [Exception] $Exception, [hashtable] $ExtraData) {
+        $this.Log([LogLevel]::FATAL, $Message, $Exception, $ExtraData)
+        $this.Flush()
     }
     
     # Destrutor - garantir flush ao destruir objeto

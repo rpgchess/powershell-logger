@@ -20,7 +20,7 @@ BeforeAll {
     Import-Module $modulePath -Force
 }
 
-Describe 'LoggerConfig' {
+Describe 'LoggerConfig' -Tag 'Unit' {
     Context 'Instantiation' {
         It 'Should create config with default values' {
             $config = [LoggerConfig]::new()
@@ -71,7 +71,7 @@ Describe 'LoggerConfig' {
     }
 }
 
-Describe 'Logger' {
+Describe 'Logger' -Tag 'Unit' {
     Context 'Instantiation' {
         It 'Should create logger with default config' {
             $logger = [Logger]::new()
@@ -212,7 +212,7 @@ Describe 'Logger' {
     }
 }
 
-Describe 'LogLevel Enum' {
+Describe 'LogLevel Enum' -Tag 'Unit' {
     Context 'Values' {
         It 'Should have correct DEBUG value' {
             [LogLevel]::DEBUG.value__ | Should -Be 0
